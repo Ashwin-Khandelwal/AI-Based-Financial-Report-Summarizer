@@ -1,140 +1,190 @@
-# app.py
+# fast_app.py
 import streamlit as st
 import pandas as pd
 from groq import Groq
 from io import StringIO
-
-# Primary PDF parser
 import pdfplumber
-# Backup parser
 from PyPDF2 import PdfReader
 
-st.set_page_config(page_title="Financial Report Summarizer (Groq)", layout="wide")
+st.set_page_config(page_title="Fast Financial Analyzer", layout="wide")
 
-# ---- INPUT: API KEY ----
-st.sidebar.header("🔑 API Settings")
-api_key = st.sidebar.text_input("Enter your Groq API Key", type="password")
+# ---- SIDEBAR ----
+st.sidebar.header("🔑 Settings")
+api_key = st.sidebar.text_input("Groq API Key", type="password")
 
-if api_key:
-    client = Groq(api_key=api_key)
-else:
-    st.warning("Please enter your Groq API key in the sidebar to continue.")
+if not api_key:
+    st.warning("⚠️ Please enter your Groq API key to continue")
     st.stop()
 
-# ---- FUNCTIONS ----
+client = Groq(api_key=api_key)
+
+# ---- FAST FUNCTIONS ----
 @st.cache_data
-def extract_text_from_pdf(pdf_file):
-    """Extract text using pdfplumber, fallback to PyPDF2 if needed"""
+def extract_pdf_text(pdf_file):
+    """Fast PDF extraction with smart truncation"""
     text = ""
-
+    
     try:
+        # Try pdfplumber first (better quality)
         with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages:
-                text += page.extract_text() or ""
-        if text.strip():
-            return text
-    except Exception as e:
-        st.warning(f"⚠️ pdfplumber failed, switching to backup parser. Error: {e}")
+            for page in pdf.pages[:20]:  # Limit to first 20 pages for speed
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+                if len(text) > 50000:  # Stop at ~50k chars
+                    break
+    except:
+        # Fallback to PyPDF2
+        try:
+            reader = PdfReader(pdf_file)
+            for i, page in enumerate(reader.pages[:15]):  # Even fewer pages for fallback
+                text += page.extract_text() + "\n"
+                if len(text) > 40000:
+                    break
+        except:
+            return ""
+    
+    return text[:45000]  # Hard limit for API efficiency
 
-    # Backup: PyPDF2
+def smart_truncate(text, max_chars=20000):
+    """Keep important sections, truncate middle"""
+    if len(text) <= max_chars:
+        return text
+    
+    # Keep first 40% and last 40%, skip middle 20%
+    start_len = int(max_chars * 0.4)
+    end_len = int(max_chars * 0.4)
+    
+    start = text[:start_len]
+    end = text[-end_len:]
+    
+    return f"{start}\n\n[... MIDDLE SECTION TRUNCATED ...]\n\n{end}"
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def analyze_report(_client, text, analysis_type):
+    """Single API call for each analysis type"""
+    
+    prompts = {
+        "summary": f"""Analyze this financial report and provide a concise executive summary in 150-200 words:
+
+{text}
+
+Focus on: Revenue trends, profitability, key developments, and outlook.""",
+
+        "metrics": f"""Extract key financial metrics from this report and format as CSV:
+
+{text}
+
+Required format:
+Metric,Current Period,Previous Period,Change
+Revenue,[amount],[amount],[%]
+Net Income,[amount],[amount],[%]
+EBITDA,[amount],[amount],[%]
+EPS,[amount],[amount],[%]
+Total Assets,[amount],[amount],[%]
+Total Debt,[amount],[amount],[%]
+
+Use actual numbers from the report. Write 'N/A' if not found.""",
+
+        "risks": f"""Identify the top 5 risks and opportunities from this financial report:
+
+{text}
+
+Format as:
+RISKS:
+• [Risk 1]
+• [Risk 2]
+• [Risk 3]
+
+OPPORTUNITIES:
+• [Opportunity 1]
+• [Opportunity 2]"""
+    }
+    
     try:
-        reader = PdfReader(pdf_file)
-        for page in reader.pages:
-            text += page.extract_text() or ""
-    except Exception as e:
-        st.error(f"❌ Both PDF parsers failed. Error: {e}")
-        return ""
-
-    return text
-
-def chunk_text(text, chunk_size=3000):
-    """Split text into smaller chunks for LLM processing"""
-    words = text.split()
-    for i in range(0, len(words), chunk_size):
-        yield " ".join(words[i:i+chunk_size])
-
-def safe_text(text, max_tokens=7000):
-    """Truncate text if it exceeds token limit"""
-    words = text.split()
-    if len(words) > max_tokens:
-        return " ".join(words[:max_tokens])
-    return text
-
-def llm_call(prompt):
-    """Generic Groq API wrapper with error handling"""
-    try:
-        response = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+        response = _client.chat.completions.create(
+            model="openai/gpt-oss-20b",  # Fast, reliable model
             messages=[
-                {"role": "system", "content": "You are a financial analyst assistant."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "You are a financial analyst. Provide accurate, concise analysis."},
+                {"role": "user", "content": prompts[analysis_type]}
             ],
-            temperature=0.2,
+            temperature=0.1,
+            max_tokens=800,  # Limit response length for speed
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Error calling Groq API: {e}"
+        return f"❌ Error: {str(e)}"
 
-def process_with_progress(chunks, mode):
-    """Process multiple chunks with progress bar and summary of summaries"""
-    prompts = {
-        "summary": "Summarize the financial report in 200 words highlighting key performance trends.",
-        "metrics": "Extract key financial metrics (Revenue, EBITDA, Net Profit, EPS, Debt) in tabular format from this report. Respond in CSV format.",
-        "risks": "Identify top 5 risks and challenges discussed in this report in bullet points."
-    }
+# ---- STREAMLIT UI ----
+st.title("⚡ Fast Financial Report Analyzer")
+st.write("Upload a PDF financial report for instant analysis (optimized for speed)")
 
-    results = []
-    progress = st.progress(0, text="Starting...")
-    total = len(chunks)
+# File upload
+uploaded_file = st.file_uploader("📁 Upload PDF Report", type="pdf")
 
-    for i, chunk in enumerate(chunks, start=1):
-        results.append(llm_call(f"{prompts[mode]}\n\n{chunk}"))
-        progress.progress(i/total, text=f"Processing chunk {i}/{total}...")
-    progress.empty()
-
-    # --- Summary of summaries step ---
-    combined = "\n".join(results)
-    final_prompt = f"Combine and refine the following outputs into one coherent, concise result:\n\n{combined}"
-    return llm_call(final_prompt)
-
-# ---- STREAMLIT APP ----
-st.title("📊 AI-Based Financial Report Summarizer (Groq)")
-st.write("Upload an annual/quarterly financial report PDF to generate key insights.")
-
-uploaded_file = st.file_uploader("Upload Financial Report (PDF)", type="pdf")
-
-if uploaded_file is not None:
-    with st.spinner("Extracting text..."):
-        report_text = extract_text_from_pdf(uploaded_file)
-
+if uploaded_file:
+    # Show file info
+    file_size = uploaded_file.size / (1024*1024)  # MB
+    st.info(f"📄 File: {uploaded_file.name} ({file_size:.1f} MB)")
+    
+    # Extract text with progress
+    with st.spinner("🔍 Extracting text..."):
+        report_text = extract_pdf_text(uploaded_file)
+    
     if not report_text.strip():
-        st.error("❌ Could not extract any text from the PDF. Try another file.")
-    else:
-        st.success("Report uploaded successfully ✅")
+        st.error("❌ Could not extract text from PDF")
+        st.stop()
+    
+    # Show extraction success
+    word_count = len(report_text.split())
+    st.success(f"✅ Extracted {word_count:,} words from report")
+    
+    # Smart truncation for API efficiency
+    processed_text = smart_truncate(report_text)
+    
+    # ---- ANALYSIS BUTTONS (Side by side) ----
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📋 Executive Summary", use_container_width=True):
+            with st.spinner("Analyzing..."):
+                summary = analyze_report(client, processed_text, "summary")
+            st.subheader("Executive Summary")
+            st.write(summary)
+    
+    with col2:
+        if st.button("📊 Key Metrics", use_container_width=True):
+            with st.spinner("Extracting metrics..."):
+                metrics = analyze_report(client, processed_text, "metrics")
+            st.subheader("Financial Metrics")
+            
+            # Try to display as table
+            try:
+                if "," in metrics and "\n" in metrics:
+                    df = pd.read_csv(StringIO(metrics))
+                    st.dataframe(df, use_container_width=True)
+                else:
+                    st.text(metrics)
+            except:
+                st.text(metrics)
+    
+    with col3:
+        if st.button("⚠️ Risks & Opportunities", use_container_width=True):
+            with st.spinner("Identifying risks..."):
+                risks = analyze_report(client, processed_text, "risks")
+            st.subheader("Risks & Opportunities")
+            st.write(risks)
+    
+    # ---- QUICK STATS ----
+    with st.expander("📈 Quick Stats", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Words Extracted", f"{word_count:,}")
+        with col2:
+            st.metric("Pages Processed", "~20 max")
+        with col3:
+            st.metric("Processing Time", "~5-10 sec")
 
-        # Tabs for different outputs
-        tab1, tab2, tab3 = st.tabs(["📋 Executive Summary", "📈 Key Metrics", "⚠ Risks & Opportunities"])
-
-        with tab1:
-            if st.button("Generate Executive Summary"):
-                chunks = list(chunk_text(safe_text(report_text)))
-                summary = process_with_progress(chunks, mode="summary")
-                st.write(summary)
-
-        with tab2:
-            if st.button("Extract Key Metrics"):
-                chunks = list(chunk_text(safe_text(report_text)))
-                metrics_output = process_with_progress(chunks, mode="metrics")
-
-                # Try to parse CSV-like output into a table
-                try:
-                    df = pd.read_csv(StringIO(metrics_output))
-                    st.table(df)
-                except Exception:
-                    st.markdown(metrics_output)  # fallback: show raw text
-
-        with tab3:
-            if st.button("Identify Risks & Opportunities"):
-                chunks = list(chunk_text(safe_text(report_text)))
-                risks = process_with_progress(chunks, mode="risks")
-                st.write(risks)
+# ---- FOOTER ----
+st.markdown("---")
+st.markdown("💡 **Speed Optimizations**: Limited pages, smart text truncation, single API calls, caching enabled")
