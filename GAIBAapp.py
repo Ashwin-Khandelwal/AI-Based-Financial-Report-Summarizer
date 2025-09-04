@@ -1,190 +1,88 @@
-# fast_app.py
+# lightning_fast_app.py
 import streamlit as st
 import pandas as pd
 from groq import Groq
 from io import StringIO
 import pdfplumber
-from PyPDF2 import PdfReader
 
-st.set_page_config(page_title="Fast Financial Analyzer", layout="wide")
+st.set_page_config(page_title="Lightning Fast Analyzer", layout="wide")
 
-# ---- SIDEBAR ----
-st.sidebar.header("🔑 Settings")
+# ---- MINIMAL SETUP ----
+st.sidebar.header("🔑 API Key")
 api_key = st.sidebar.text_input("Groq API Key", type="password")
 
 if not api_key:
-    st.warning("⚠️ Please enter your Groq API key to continue")
+    st.warning("Enter API key to continue")
     st.stop()
 
 client = Groq(api_key=api_key)
 
-# ---- FAST FUNCTIONS ----
+# ---- ULTRA-FAST FUNCTIONS ----
 @st.cache_data
-def extract_pdf_text(pdf_file):
-    """Fast PDF extraction with smart truncation"""
+def extract_first_pages(pdf_file):
+    """Extract only first 3-5 pages for speed"""
     text = ""
-    
     try:
-        # Try pdfplumber first (better quality)
         with pdfplumber.open(pdf_file) as pdf:
-            for page in pdf.pages[:20]:  # Limit to first 20 pages for speed
+            # Only first 3 pages - financial summary is usually here
+            for i, page in enumerate(pdf.pages[:3]):
                 page_text = page.extract_text()
                 if page_text:
-                    text += page_text + "\n"
-                if len(text) > 50000:  # Stop at ~50k chars
+                    text += page_text
+                # Stop at 10k characters max
+                if len(text) > 10000:
                     break
+        return text[:8000]  # Hard cutoff
     except:
-        # Fallback to PyPDF2
-        try:
-            reader = PdfReader(pdf_file)
-            for i, page in enumerate(reader.pages[:15]):  # Even fewer pages for fallback
-                text += page.extract_text() + "\n"
-                if len(text) > 40000:
-                    break
-        except:
-            return ""
-    
-    return text[:45000]  # Hard limit for API efficiency
+        return ""
 
-def smart_truncate(text, max_chars=20000):
-    """Keep important sections, truncate middle"""
-    if len(text) <= max_chars:
-        return text
-    
-    # Keep first 40% and last 40%, skip middle 20%
-    start_len = int(max_chars * 0.4)
-    end_len = int(max_chars * 0.4)
-    
-    start = text[:start_len]
-    end = text[-end_len:]
-    
-    return f"{start}\n\n[... MIDDLE SECTION TRUNCATED ...]\n\n{end}"
-
-@st.cache_data(ttl=1800)  # Cache for 30 minutes
-def analyze_report(_client, text, analysis_type):
-    """Single API call for each analysis type"""
-    
-    prompts = {
-        "summary": f"""Analyze this financial report and provide a concise executive summary in 150-200 words:
-
-{text}
-
-Focus on: Revenue trends, profitability, key developments, and outlook.""",
-
-        "metrics": f"""Extract key financial metrics from this report and format as CSV:
-
-{text}
-
-Required format:
-Metric,Current Period,Previous Period,Change
-Revenue,[amount],[amount],[%]
-Net Income,[amount],[amount],[%]
-EBITDA,[amount],[amount],[%]
-EPS,[amount],[amount],[%]
-Total Assets,[amount],[amount],[%]
-Total Debt,[amount],[amount],[%]
-
-Use actual numbers from the report. Write 'N/A' if not found.""",
-
-        "risks": f"""Identify the top 5 risks and opportunities from this financial report:
-
-{text}
-
-Format as:
-RISKS:
-• [Risk 1]
-• [Risk 2]
-• [Risk 3]
-
-OPPORTUNITIES:
-• [Opportunity 1]
-• [Opportunity 2]"""
-    }
-    
+def quick_analyze(text, prompt):
+    """Minimal API call"""
     try:
-        response = _client.chat.completions.create(
-            model="openai/gpt-oss-20b",  # Fast, reliable model
-            messages=[
-                {"role": "system", "content": "You are a financial analyst. Provide accurate, concise analysis."},
-                {"role": "user", "content": prompts[analysis_type]}
-            ],
-            temperature=0.1,
-            max_tokens=800,  # Limit response length for speed
+        response = client.chat.completions.create(
+            model="llama3-8b-8192",  # Fastest model
+            messages=[{"role": "user", "content": f"{prompt}\n\n{text}"}],
+            temperature=0,
+            max_tokens=300,  # Very short responses
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"❌ Error: {str(e)}"
+        return f"Error: {e}"
 
 # ---- STREAMLIT UI ----
-st.title("⚡ Fast Financial Report Analyzer")
-st.write("Upload a PDF financial report for instant analysis (optimized for speed)")
+st.title("⚡ Lightning Fast Financial Analyzer")
+st.write("Super fast analysis - first 3 pages only")
 
-# File upload
-uploaded_file = st.file_uploader("📁 Upload PDF Report", type="pdf")
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
 if uploaded_file:
-    # Show file info
-    file_size = uploaded_file.size / (1024*1024)  # MB
-    st.info(f"📄 File: {uploaded_file.name} ({file_size:.1f} MB)")
+    # Extract immediately on upload
+    text = extract_first_pages(uploaded_file)
     
-    # Extract text with progress
-    with st.spinner("🔍 Extracting text..."):
-        report_text = extract_pdf_text(uploaded_file)
-    
-    if not report_text.strip():
-        st.error("❌ Could not extract text from PDF")
+    if not text:
+        st.error("Cannot read PDF")
         st.stop()
     
-    # Show extraction success
-    word_count = len(report_text.split())
-    st.success(f"✅ Extracted {word_count:,} words from report")
+    st.success(f"✅ Ready! ({len(text)} characters)")
     
-    # Smart truncation for API efficiency
-    processed_text = smart_truncate(report_text)
-    
-    # ---- ANALYSIS BUTTONS (Side by side) ----
+    # Show buttons immediately
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📋 Executive Summary", use_container_width=True):
-            with st.spinner("Analyzing..."):
-                summary = analyze_report(client, processed_text, "summary")
-            st.subheader("Executive Summary")
-            st.write(summary)
+        if st.button("📋 Summary"):
+            result = quick_analyze(text, "Summarize key financial highlights in 100 words:")
+            st.write(result)
     
     with col2:
-        if st.button("📊 Key Metrics", use_container_width=True):
-            with st.spinner("Extracting metrics..."):
-                metrics = analyze_report(client, processed_text, "metrics")
-            st.subheader("Financial Metrics")
-            
-            # Try to display as table
-            try:
-                if "," in metrics and "\n" in metrics:
-                    df = pd.read_csv(StringIO(metrics))
-                    st.dataframe(df, use_container_width=True)
-                else:
-                    st.text(metrics)
-            except:
-                st.text(metrics)
+        if st.button("📊 Numbers"):
+            result = quick_analyze(text, "List main financial numbers (revenue, profit, etc):")
+            st.write(result)
     
     with col3:
-        if st.button("⚠️ Risks & Opportunities", use_container_width=True):
-            with st.spinner("Identifying risks..."):
-                risks = analyze_report(client, processed_text, "risks")
-            st.subheader("Risks & Opportunities")
-            st.write(risks)
-    
-    # ---- QUICK STATS ----
-    with st.expander("📈 Quick Stats", expanded=False):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Words Extracted", f"{word_count:,}")
-        with col2:
-            st.metric("Pages Processed", "~20 max")
-        with col3:
-            st.metric("Processing Time", "~5-10 sec")
+        if st.button("⚠️ Risks"):
+            result = quick_analyze(text, "What are 3 main risks mentioned?")
+            st.write(result)
 
-# ---- FOOTER ----
+# Performance note
 st.markdown("---")
-st.markdown("💡 **Speed Optimizations**: Limited pages, smart text truncation, single API calls, caching enabled")
+st.info("🚀 **Ultra-fast mode**: Analyzes first 3 pages only (~2-3 second response time)")
